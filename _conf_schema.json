@@ -29,7 +29,7 @@
     "description": "启用 LLM 自然语言回复",
     "type": "bool",
     "default": false,
-    "hint": "关闭时按自定义回复模板输出；开启后由模型转述，可能产生调用费用。查询或模型失败时按模板输出。"
+    "hint": "开启后读取当前 AstrBot 会话人格，用对应语气组织余额回复；模型或人格读取失败时回退模板。日志显示调用状态。"
   },
   "reply_template": {
     "description": "自定义回复模板",
@@ -42,7 +42,7 @@
     "type": "string",
     "default": "",
     "_special": "select_provider",
-    "hint": "可选；留空使用当前会话的聊天模型。只有启用 LLM 时生效。"
+    "hint": "只选择模型，不改变人格；留空使用当前会话模型。人格自动跟随当前会话及生效配置。"
   },
   "admin_only": {
     "description": "仅允许 AstrBot 管理员查询",
@@ -59,6 +59,12 @@
       "max": 60,
       "step": 1
     },
-    "hint": "每次 HTTP 请求及 LLM 回复分别使用此超时时间。"
+    "hint": "余额 HTTP 请求超时；LLM 使用独立的回复超时时间。"
+  },
+  "llm_timeout_seconds": {
+    "description": "LLM 回复超时时间（秒）",
+    "type": "int",
+    "default": 60,
+    "hint": "独立于余额接口超时，范围 5–300 秒。推理模型可适当提高。"
   }
 }

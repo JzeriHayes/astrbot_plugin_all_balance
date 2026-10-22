@@ -1,6 +1,7 @@
 """全量余额查询：查询账户钱包，而不是 API 令牌限额。"""
 
 import asyncio
+import re
 from decimal import Decimal, InvalidOperation
 from string import Formatter
 from urllib.parse import urlsplit
@@ -108,6 +109,12 @@ class AllBalancePlugin(Star):
         except (ValueError, TypeError):
             return 15
 
+    def _llm_timeout(self):
+        try:
+            return max(5, min(300, int(self.config.get("llm_timeout_seconds", 60))))
+        except (TypeError, ValueError):
+            return 60
+
     @staticmethod
     async def _get(session, url, headers=None):
         try:
@@ -171,28 +178,86 @@ class AllBalancePlugin(Star):
             logger.warning("全量余额查询异常类型：%s", type(exc).__name__)
             return "查询失败（内部异常，请检查插件配置）", False
 
+    async def _persona_prompt(self, event):
+        """使用核心解析器，尊重会话切换、会话规则和当前配置文件。"""
+        manager = getattr(self.context, "persona_manager", None)
+        if manager is None:
+            logger.warning("全量余额查询：当前版本未提供人格管理器；使用无额外人格的回复")
+            return ""
+        umo = event.unified_msg_origin
+        conversation_id = None
+        conversations = getattr(self.context, "conversation_manager", None)
+        if conversations is not None:
+            cid = await conversations.get_curr_conversation_id(umo)
+            if cid:
+                conversation = await conversations.get_conversation(umo, cid)
+                conversation_id = getattr(conversation, "persona_id", None)
+        resolver = getattr(manager, "resolve_selected_persona", None)
+        if resolver is not None:
+            platform_name = event.get_platform_name() if hasattr(event, "get_platform_name") else ""
+            _, persona, _, special_default = await resolver(
+                umo=umo, conversation_persona_id=conversation_id,
+                platform_name=platform_name,
+            )
+            if special_default:
+                logger.info("全量余额查询：WebChat 特殊默认人格不由插件复制；未指定额外角色")
+        elif conversation_id == "[%None]":
+            persona = None
+        elif conversation_id:
+            persona = manager.get_persona_v3_by_id(conversation_id)
+        else:
+            persona = await manager.get_default_persona_v3(umo)
+        if persona:
+            prompt = persona.get("prompt", "") if isinstance(persona, dict) else getattr(persona, "system_prompt", "")
+            if isinstance(prompt, str):
+                logger.info("全量余额查询：已读取当前会话人格，按人格语气生成回复")
+                return prompt
+        logger.info("全量余额查询：当前会话未选择可读取的人格")
+        return ""
+
     async def _narrate(self, event, template, amounts):
         try:
-            provider_id = str(self.config.get("llm_provider_id", "")).strip()
+            provider_id = str(self.config.get("llm_provider_id") or "").strip()
             if not provider_id:
                 provider_id = await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
             if not provider_id:
+                logger.warning("全量余额查询：LLM 已启用，但当前会话没有聊天模型；回退模板")
                 return template
+            persona_prompt = await self._persona_prompt(event)
+            logger.info("全量余额查询：开始调用 LLM 优化回复")
             response = await self.context.llm_generate(
                 chat_provider_id=provider_id,
-                system_prompt="用简短自然的中文告知用户两项账户余额。必须保留New API和deepseek名称，以及每项金额、币种原文，不得交换归属，不要合并不同币种。不得编造、换算或推测数据。不要添加链接，不需要工具。",
-                prompt="请自然地转述以下查询结果：\n" + template + "\n核实数据：New API：" + amounts[0] + "；deepseek：" + amounts[-1],
+                system_prompt=persona_prompt,
+                prompt="用户请求查询余额。请保持你当前的人格、称呼习惯和说话语气自然地回复，不要扮演新的播报助手。分别说明 New API 和 DeepSeek 的结果，保留金额和币种（可省略末尾零），不要交换归属或编造数值。失败项原样保留失败原因，不要当成零余额。不需要工具。\n真实查询数据：\nNew API：" + amounts[0] + "\nDeepSeek：" + amounts[-1] + "\n用户的回复模板（仅参考措辞）：\n" + template,
             )
             text = response.completion_text
-            if not isinstance(text, str) or not text.strip() or len(text) > 1000:
+            if not isinstance(text, str) or not text.strip() or len(text) > 2000:
+                logger.warning("全量余额查询：LLM 返回空内容或内容过长；回退模板")
                 return template
-            if not all(value in text for value in amounts):
+            # 比较数值与币种，允许 1.0000 USD -> 1 USD / USD 1。
+            compact = re.sub(r"\s+", "", text).lower()
+            if "newapi" not in compact or "deepseek" not in compact:
+                logger.warning("全量余额查询：LLM 缺少平台名称；回退模板")
                 return template
-            if "new api" not in text.lower() or "deepseek" not in text.lower():
-                return template
+            for value in amounts:
+                if value.startswith("查询失败"):
+                    valid = value in text
+                else:
+                    pairs = re.findall(r"(-?\d+(?:\.\d+)?)\s+([^\s/]+)", value)
+                    valid = bool(pairs)
+                    for amount, currency in pairs:
+                        c = re.escape(currency)
+                        pattern = rf"(-?\d+(?:\.\d+)?)\s*{c}(?![A-Za-z])|(?<![A-Za-z]){c}\s*(-?\d+(?:\.\d+)?)"
+                        matches = re.findall(pattern, text, re.IGNORECASE)
+                        if not any(number(x or y) == number(amount) for x, y in matches):
+                            valid = False
+                if not valid:
+                    logger.warning("全量余额查询：LLM 改变或遗漏余额/币种/失败信息；回退模板")
+                    return template
+            logger.info("全量余额查询：LLM 回复生成成功，已采用")
             return text.strip()
         except Exception as exc:
-            logger.warning("全量余额查询 LLM 回退模板，异常类型：%s", type(exc).__name__)
+            logger.warning("全量余额查询：LLM 调用失败，异常类型：%s；请检查聊天模型配置，已回退模板", type(exc).__name__)
             return template
 
     @filter.command("余额")
@@ -210,13 +275,14 @@ class AllBalancePlugin(Star):
             )
         template = render_reply(self.config.get("reply_template", DEFAULT_REPLY_TEMPLATE), newapi[0], deepseek[0])
         text = template
-        if self.config.get("enable_llm", False) and newapi[1] and deepseek[1]:
+        if self.config.get("enable_llm", False):
             try:
                 text = await asyncio.wait_for(
                     self._narrate(event, template, [newapi[0], deepseek[0]]),
-                    timeout=self._timeout(),
+                    timeout=self._llm_timeout(),
                 )
             except asyncio.TimeoutError:
+                logger.warning("全量余额查询：LLM 回复超时，已回退模板；可增加 LLM 超时时间")
                 text = template
         yield event.plain_result(text)
         event.stop_event()
