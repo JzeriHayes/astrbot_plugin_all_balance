@@ -1,0 +1,64 @@
+{
+  "newapi_base_url": {
+    "description": "New API 站点地址",
+    "type": "string",
+    "default": "https://new.jzeri.cn",
+    "hint": "填写 HTTPS 站点根地址，不要添加 /v1。"
+  },
+  "newapi_access_token": {
+    "description": "New API 系统访问令牌 / Personal Access Token",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "在 New API 个人设置中创建的系统访问令牌；不是令牌页里调用模型的 sk- 密钥。用于读取账户钱包余额，不要填写账号密码。"
+  },
+  "newapi_user_id": {
+    "description": "New API 用户 ID（可选）",
+    "type": "string",
+    "default": "",
+    "hint": "当前站点版本可留空；旧版若提示缺少 New-Api-User，则填写令牌所属账户的数字 ID。"
+  },
+  "deepseek_api_key": {
+    "description": "DeepSeek 官方 API Key",
+    "type": "string",
+    "default": "",
+    "secret": true,
+    "hint": "在 platform.deepseek.com 创建。不是 New API 的转发密钥。"
+  },
+  "enable_llm": {
+    "description": "启用 LLM 自然语言回复",
+    "type": "bool",
+    "default": false,
+    "hint": "关闭时按自定义回复模板输出；开启后由模型转述，可能产生调用费用。查询或模型失败时按模板输出。"
+  },
+  "reply_template": {
+    "description": "自定义回复模板",
+    "type": "text",
+    "default": "当前New API余额为：{newapi_balance}\ndeepseek余额为：{deepseek_balance}",
+    "hint": "必须同时包含 {newapi_balance} 和 {deepseek_balance}，分别替换为余额（含币种）或失败原因。支持直接换行；普通花括号写成 {{ 和 }}。留空、未知字段、缺少字段或超过4000字符时使用默认模板。开启 LLM 后可能改写措辞，需严格按模板输出请关闭 LLM。"
+  },
+  "llm_provider_id": {
+    "description": "自然语言回复模型",
+    "type": "string",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "可选；留空使用当前会话的聊天模型。只有启用 LLM 时生效。"
+  },
+  "admin_only": {
+    "description": "仅允许 AstrBot 管理员查询",
+    "type": "bool",
+    "default": true,
+    "hint": "默认保护账户隐私。关闭后任何能向机器人发送 /余额 的人都能查看同一组已配置账户的余额。群内查询的回复对群成员可见。"
+  },
+  "timeout_seconds": {
+    "description": "请求超时时间（秒）",
+    "type": "int",
+    "default": 15,
+    "slider": {
+      "min": 1,
+      "max": 60,
+      "step": 1
+    },
+    "hint": "每次 HTTP 请求及 LLM 回复分别使用此超时时间。"
+  }
+}
